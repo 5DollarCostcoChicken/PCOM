@@ -1127,6 +1127,84 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 603454057}
   m_Mesh: {fileID: 10209, guid: 0000000000000000e000000000000000, type: 0}
+--- !u!1001 &635524801
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 1964980097}
+    m_Modifications:
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalScale.x
+      value: 5
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalScale.y
+      value: 7
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalScale.z
+      value: 5
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 0.076
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: -0.014
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 0.002
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 0.7071068
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0.7071068
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 90
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_ConstrainProportionsScale
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 919132149155446097, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+      propertyPath: m_Name
+      value: sworddemo
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+--- !u!4 &635524802 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: ee654b903d1960b47b6ffc517b80c29c, type: 3}
+  m_PrefabInstance: {fileID: 635524801}
+  m_PrefabAsset: {fileID: 0}
 --- !u!1 &699355974 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 919132149155446097, guid: 06256bc22ef544341927443a6c161701, type: 3}
@@ -1735,6 +1813,8 @@ MonoBehaviour:
   maximumSafeDownwardFallHeight: 6
   hazardTraversalPenalty: 2
   movementSpeed: 6
+  slowMovementTransitionThreshold: 7
+  slowMovementSpeedMultiplier: 0.65
   faceMovementDirection: 1
   slopeTraversalHeightOffset: 0.35
   rotationSpeed: 540
@@ -1747,7 +1827,7 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 0
   movementBodyCollider: {fileID: 1191934650}
-  preJumpDelay: 0.2
+  preJumpDelay: 0.5
   postJumpLandingDelay: 0.15
   jumpDuration: 0.3
   jumpArcHeight: 0.5
@@ -1815,7 +1895,7 @@ MonoBehaviour:
   baseDropLandingDelay: 0.1
   additionalDropLandingDelayPerCellBeyondFirst: 0.18
   minimumDropLandingDelay: 0
-  maximumDropLandingDelay: 1
+  maximumDropLandingDelay: 1.5
   dropDuration: 0.2
   dropMotionCurve:
     serializedVersion: 2
@@ -1844,6 +1924,7 @@ MonoBehaviour:
   preLadderDelay: 0.08
   postLadderDelay: 0.08
   ladderClimbingSpeed: 2
+  ladderTopClamberHeightInCells: 0.25
   ladderBobAmplitude: 0.05
   ladderBobCycleCount: 2
   ladderMotionCurve:
@@ -1875,6 +1956,7 @@ MonoBehaviour:
   currentCoordinate: {x: 0, y: 0, z: 0}
   isInitialized: 0
   isMoving: 0
+  isUsingSlowMovement: 0
 --- !u!114 &1191934656
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1890,23 +1972,27 @@ MonoBehaviour:
   unitMovement: {fileID: 1191934655}
   animator: {fileID: 1673230364}
   idleClip: {fileID: -203655887218126122, guid: 8eac850f2ce5dc64daae066d669acf5a, type: 3}
-  runClip: {fileID: -203655887218126122, guid: 137d19f9f3a490a4681876647b6384f9, type: 3}
+  runClip: {fileID: 7400000, guid: b01924208fecc694b8cf4a1ca5d5d102, type: 2}
   runStartClip: {fileID: 0}
   runStopClip: {fileID: 1827226128182048838, guid: 27e922bb0c5abd64a8954c48bcccfe3c, type: 3}
+  slowRunClip: {fileID: 7400000, guid: 919f6b23494788a49858caa8f6f16b10, type: 2}
+  slowMovementStopClip: {fileID: -203655887218126122, guid: 8eac850f2ce5dc64daae066d669acf5a, type: 3}
   uphillRunClip: {fileID: 0}
   downhillRunClip: {fileID: 0}
   turnLeftClip: {fileID: 1827226128182048838, guid: 27e922bb0c5abd64a8954c48bcccfe3c, type: 3}
   turnRightClip: {fileID: 1827226128182048838, guid: 27e922bb0c5abd64a8954c48bcccfe3c, type: 3}
   aboutFaceClip: {fileID: 0}
   jumpAnticipationClip: {fileID: 7400000, guid: 960647bfcfcf87d488023a991f3b6948, type: 2}
-  jumpAirborneClip: {fileID: -203655887218126122, guid: 540acc982061a6a4491e35b5db8839a6, type: 3}
+  jumpAirborneClip: {fileID: 1827226128182048838, guid: 5f5ce02362c8c8845ab05a035f1d18b9, type: 3}
   jumpLandingClip: {fileID: 7400000, guid: ecab4743caf426c4bba4e4d7dcc73ccc, type: 2}
   clamberClip: {fileID: 7400000, guid: b89b1117a1f811740ade734c897669ec, type: 2}
   dropPreparationClip: {fileID: 7400000, guid: c7a0d1451a638ee49b58d6dc87bde0e8, type: 2}
   fallLoopClip: {fileID: 1827226128182048838, guid: 51d35186efa971f42bdd99d8764bbebf, type: 3}
-  dropLandingClip: {fileID: 7400000, guid: 76df73bf0d2622049ba981b5a89d9113, type: 2}
+  shortDropLandingClip: {fileID: 1827226128182048838, guid: d7241a6d67f6d3949af9d3d40da2c5f7, type: 3}
+  shortDropLandingMaximumHeight: 3
+  dropLandingClip: {fileID: 1827226128182048838, guid: 504ec910a2ed8ab4c993c069010b1aa6, type: 3}
   ladderPreparationClip: {fileID: 0}
-  ladderClimbClip: {fileID: 7400000, guid: 706517678418e0543a438732407f6dfe, type: 2}
+  ladderClimbClip: {fileID: 7400000, guid: 714f2d5a8e1972345b62a92d852c6a26, type: 2}
   ladderDismountClip: {fileID: 7400000, guid: b89b1117a1f811740ade734c897669ec, type: 2}
   defaultCrossFadeDuration: 0.15
   turnCrossFadeDuration: 0.08
@@ -2098,7 +2184,10 @@ PrefabInstance:
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
-    m_AddedGameObjects: []
+    m_AddedGameObjects:
+    - targetCorrespondingSourceObject: {fileID: 9163166418615681363, guid: 06256bc22ef544341927443a6c161701, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 635524802}
     m_AddedComponents:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 06256bc22ef544341927443a6c161701, type: 3}
       insertIndex: -1
@@ -2520,6 +2609,11 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1877066646}
   m_Mesh: {fileID: 10209, guid: 0000000000000000e000000000000000, type: 0}
+--- !u!4 &1964980097 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 9163166418615681363, guid: 06256bc22ef544341927443a6c161701, type: 3}
+  m_PrefabInstance: {fileID: 1673230362}
+  m_PrefabAsset: {fileID: 0}
 --- !u!1 &2101868223
 GameObject:
   m_ObjectHideFlags: 0

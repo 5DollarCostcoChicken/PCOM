@@ -21,6 +21,7 @@ namespace PCOM.Tests
             SetMovementField("captureStandingOffsetDuringInitialization", false);
             SetMovementField("movementAmount", 1f);
             SetMovementField("movementSpeed", 1000f);
+            SetMovementField("slowMovementSpeedMultiplier", 1f);
             SetMovementField("hazardTraversalPenalty", 2f);
             SetMovementField("temporaryStartingActionPoints", 3);
             SetMovementField("temporaryCurrentActionPoints", 3);
@@ -190,6 +191,31 @@ namespace PCOM.Tests
         }
 
         [Test]
+        public void RoutesShorterThanFiveTransitionsUseConfiguredSlowSpeed()
+        {
+            AddStraightFloorPath(5);
+            SetMovementField("movementAmount", 10f);
+            SetMovementField("movementSpeed", 10f);
+            SetMovementField("slowMovementTransitionThreshold", 5);
+            SetMovementField("slowMovementSpeedMultiplier", 0.5f);
+            movement.TryInitializeAtCoordinate(Vector3Int.zero, true);
+
+            Assert.That(movement.TryRequestMovement(Vector3Int.right * 4, out _), Is.True);
+            Assert.That(movement.IsUsingSlowMovement, Is.True);
+            Assert.That(movement.CurrentMovementSpeed, Is.EqualTo(5f));
+
+            InvokeMovementMethod("AdvanceCommittedMovement", 0.2f);
+            Assert.That(movement.transform.position.x, Is.EqualTo(1f).Within(0.001f));
+            movement.CancelMovement();
+
+            movement.TryInitializeAtCoordinate(Vector3Int.zero, true);
+            Assert.That(movement.TryRequestMovement(Vector3Int.right * 5, out _), Is.True);
+            Assert.That(movement.IsUsingSlowMovement, Is.False);
+            Assert.That(movement.CurrentMovementSpeed, Is.EqualTo(10f));
+            movement.CancelMovement();
+        }
+
+        [Test]
         public void DownhillMovementUsesContinuousHeightAtEachSlopeColumn()
         {
             Vector3Int highFloor = new Vector3Int(-1, 1, 0);
@@ -348,6 +374,31 @@ namespace PCOM.Tests
         {
             Assert.That(movement.CalculateLadderBob(0f), Is.EqualTo(0f).Within(0.0001f));
             Assert.That(movement.CalculateLadderBob(1f), Is.EqualTo(0f).Within(0.0001f));
+        }
+
+        [Test]
+        public void LadderClimbStopsOneCellBelowFloorBeforeTopClamber()
+        {
+            tileManager.CellSize = 2f;
+            Vector3 startPosition = new Vector3(0f, 1f, 0f);
+            Vector3 floorStandingPosition = new Vector3(2f, 11f, 0f);
+
+            Vector3 climbEndPosition = (Vector3)InvokeMovementMethodWithResult(
+                "CalculateLadderClimbEndPosition",
+                startPosition,
+                floorStandingPosition);
+
+            Assert.That(climbEndPosition.x, Is.EqualTo(floorStandingPosition.x));
+            Assert.That(climbEndPosition.z, Is.EqualTo(floorStandingPosition.z));
+            Assert.That(climbEndPosition.y, Is.EqualTo(9f).Within(0.0001f));
+
+            SetMovementField("ladderTopClamberHeightInCells", 0.5f);
+            Vector3 configuredClimbEndPosition =
+                (Vector3)InvokeMovementMethodWithResult(
+                    "CalculateLadderClimbEndPosition",
+                    startPosition,
+                    floorStandingPosition);
+            Assert.That(configuredClimbEndPosition.y, Is.EqualTo(10f).Within(0.0001f));
         }
 
         [Test]

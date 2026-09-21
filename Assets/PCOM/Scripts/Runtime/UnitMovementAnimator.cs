@@ -27,6 +27,8 @@ namespace PCOM
         [Header("Optional Locomotion Nuance")]
         [SerializeField] private AnimationClip runStartClip;
         [SerializeField] private AnimationClip runStopClip;
+        [SerializeField] private AnimationClip slowRunClip;
+        [SerializeField] private AnimationClip slowMovementStopClip;
         [SerializeField] private AnimationClip uphillRunClip;
         [SerializeField] private AnimationClip downhillRunClip;
         [SerializeField] private AnimationClip turnLeftClip;
@@ -42,6 +44,10 @@ namespace PCOM
         [Header("Optional Drop Clips")]
         [SerializeField] private AnimationClip dropPreparationClip;
         [SerializeField] private AnimationClip fallLoopClip;
+        [SerializeField, Tooltip("Landing used for drops within the configured short-drop height.")]
+        private AnimationClip shortDropLandingClip;
+        [SerializeField, Min(1), Tooltip("Maximum drop height in grid cells that uses the short landing clip.")]
+        private int shortDropLandingMaximumHeight = 1;
         [SerializeField] private AnimationClip dropLandingClip;
 
         [Header("Optional Ladder Clips")]
@@ -80,6 +86,8 @@ namespace PCOM
         private bool wasApplyingRootMotion;
         private bool rootMotionCaptured;
         private bool locomotionActive;
+        private bool movementUsesSlowLocomotion;
+        private bool ladderTopClamberPending;
         private AnimationClip activeLocomotionClip;
 
         public bool IsReady => graphReady;
@@ -148,7 +156,7 @@ namespace PCOM
             UnitMovement source,
             MovementPresentationSegment segment)
         {
-            activeLocomotionClip = ResolveLocomotionClip(segment);
+            activeLocomotionClip = ResolveLocomotionClip(source, segment);
             bool beginsMovement = !locomotionActive;
             locomotionActive = true;
             if (beginsMovement && runStartClip != null)
@@ -224,7 +232,11 @@ namespace PCOM
             MovementPresentationSegment segment)
         {
             locomotionActive = false;
-            PlayOptionalAction(clamberClip, false, false);
+            AnimationClip selectedClip = ladderTopClamberPending && clamberClip == null
+                ? ladderDismountClip
+                : clamberClip;
+            ladderTopClamberPending = false;
+            PlayOptionalAction(selectedClip, false, false);
         }
 
         private void HandleClamberCompleted(
@@ -253,9 +265,14 @@ namespace PCOM
             UnitMovement source,
             MovementPresentationSegment segment)
         {
-            AnimationClip landingClip = dropLandingClip != null
-                ? dropLandingClip
-                : jumpLandingClip;
+            int dropHeight = segment.StartCoordinate.y - segment.EndCoordinate.y;
+            AnimationClip landingClip = dropHeight > 0 &&
+                                        dropHeight <= shortDropLandingMaximumHeight &&
+                                        shortDropLandingClip != null
+                ? shortDropLandingClip
+                : dropLandingClip != null
+                    ? dropLandingClip
+                    : jumpLandingClip;
             PlayOptionalAction(landingClip, false, true);
         }
 
@@ -278,27 +295,55 @@ namespace PCOM
             UnitMovement source,
             MovementPresentationSegment segment)
         {
-            PlayOptionalAction(ladderDismountClip, false, true);
+            ladderTopClamberPending = true;
         }
 
         private void HandleMovementCompleted(UnitMovement source, Vector3Int coordinate)
         {
-            StopLocomotionWithNuance();
+            if (locomotionActive)
+            {
+                StopLocomotionWithNuance();
+            }
+            else
+            {
+                movementUsesSlowLocomotion = false;
+                ladderTopClamberPending = false;
+            }
         }
 
         private void HandleMovementInterrupted(UnitMovement source, Vector3Int coordinate)
         {
-            StopLocomotionWithNuance();
+            if (locomotionActive)
+            {
+                StopLocomotionWithNuance();
+            }
+            else
+            {
+                movementUsesSlowLocomotion = false;
+                ladderTopClamberPending = false;
+                PlayIdle(defaultCrossFadeDuration);
+            }
+        }
+
+        private void HandleMovementStarted(UnitMovement source, GridPathResult path)
+        {
+            movementUsesSlowLocomotion = source.IsUsingSlowMovement;
         }
 
         private void StopLocomotionWithNuance()
         {
             locomotionActive = false;
             activeLocomotionClip = null;
-            if (runStopClip != null)
+            AnimationClip stopClip = movementUsesSlowLocomotion &&
+                                     slowMovementStopClip != null
+                ? slowMovementStopClip
+                : runStopClip;
+            movementUsesSlowLocomotion = false;
+            ladderTopClamberPending = false;
+            if (stopClip != null)
             {
                 PlayClip(
-                    runStopClip,
+                    stopClip,
                     false,
                     defaultCrossFadeDuration,
                     idleClip,
@@ -311,8 +356,15 @@ namespace PCOM
             }
         }
 
-        private AnimationClip ResolveLocomotionClip(MovementPresentationSegment segment)
+        private AnimationClip ResolveLocomotionClip(
+            UnitMovement source,
+            MovementPresentationSegment segment)
         {
+            if (source.IsUsingSlowMovement && slowRunClip != null)
+            {
+                return slowRunClip;
+            }
+
             if (segment.Type == MovementPresentationSegmentType.SlopeRun)
             {
                 int elevationDifference = segment.EndCoordinate.y - segment.StartCoordinate.y;
@@ -548,7 +600,10 @@ namespace PCOM
                 defaultCrossFadeDuration,
                 null,
                 false,
-                fallback == runClip || fallback == uphillRunClip || fallback == downhillRunClip
+                fallback == runClip ||
+                fallback == slowRunClip ||
+                fallback == uphillRunClip ||
+                fallback == downhillRunClip
                     ? locomotionPlaybackSpeed
                     : actionPlaybackSpeed);
         }
@@ -589,6 +644,8 @@ namespace PCOM
             currentClip = null;
             automaticFallbackClip = null;
             activeLocomotionClip = null;
+            ladderTopClamberPending = false;
+            movementUsesSlowLocomotion = false;
             activeInputIndex = 0;
             fadingFromInputIndex = -1;
             graphReady = false;
@@ -604,6 +661,7 @@ namespace PCOM
             }
 
             unitMovement.RunBegan += HandleRunBegan;
+            unitMovement.MovementStarted += HandleMovementStarted;
             unitMovement.TurnBegan += HandleTurnBegan;
             unitMovement.TurnEnded += HandleTurnEnded;
             unitMovement.JumpAnticipationBegan += HandleJumpAnticipation;
@@ -630,6 +688,7 @@ namespace PCOM
             }
 
             unitMovement.RunBegan -= HandleRunBegan;
+            unitMovement.MovementStarted -= HandleMovementStarted;
             unitMovement.TurnBegan -= HandleTurnBegan;
             unitMovement.TurnEnded -= HandleTurnEnded;
             unitMovement.JumpAnticipationBegan -= HandleJumpAnticipation;
@@ -667,6 +726,9 @@ namespace PCOM
             defaultCrossFadeDuration = Mathf.Max(0f, defaultCrossFadeDuration);
             turnCrossFadeDuration = Mathf.Max(0f, turnCrossFadeDuration);
             actionCrossFadeDuration = Mathf.Max(0f, actionCrossFadeDuration);
+            shortDropLandingMaximumHeight = Mathf.Max(
+                1,
+                shortDropLandingMaximumHeight);
             aboutFaceThreshold = Mathf.Clamp(aboutFaceThreshold, 90f, 180f);
             locomotionPlaybackSpeed = ValidatePositiveSpeed(locomotionPlaybackSpeed);
             actionPlaybackSpeed = ValidatePositiveSpeed(actionPlaybackSpeed);

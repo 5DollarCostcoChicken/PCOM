@@ -39,6 +39,9 @@ namespace PCOM
         [Header("Physical Movement")]
         [SerializeField, Min(MinimumPositiveValue)]
         private float movementSpeed = DefaultMovementSpeed;
+        [SerializeField, Min(1), Tooltip("Routes with fewer logical transitions use slow movement.")]
+        private int slowMovementTransitionThreshold = 5;
+        [SerializeField, Range(0.01f, 1f)] private float slowMovementSpeedMultiplier = 0.65f;
         [SerializeField] private bool faceMovementDirection = true;
         [SerializeField, Tooltip("Additional vertical standing offset applied while traversing slopes.")]
         private float slopeTraversalHeightOffset;
@@ -86,6 +89,8 @@ namespace PCOM
         [SerializeField, Min(0f)] private float preLadderDelay = 0.08f;
         [SerializeField, Min(0f)] private float postLadderDelay = 0.08f;
         [SerializeField, Min(MinimumPositiveValue)] private float ladderClimbingSpeed = 2f;
+        [SerializeField, Min(0f), Tooltip("Distance below the destination, in grid cells, where ladder climbing hands off to the top clamber.")]
+        private float ladderTopClamberHeightInCells = 1f;
         [SerializeField, Min(0f)] private float ladderBobAmplitude = 0.05f;
         [SerializeField, Min(0f)] private float ladderBobCycleCount = 2f;
         [SerializeField] private AnimationCurve ladderMotionCurve;
@@ -99,6 +104,7 @@ namespace PCOM
         [SerializeField] private Vector3Int currentCoordinate;
         [SerializeField] private bool isInitialized;
         [SerializeField] private bool isMoving;
+        [SerializeField] private bool isUsingSlowMovement;
 
         private readonly GridPathfinder pathfinder = new GridPathfinder();
         private readonly MovementPresentationPathBuilder presentationPathBuilder =
@@ -153,6 +159,10 @@ namespace PCOM
         public int MaximumUpwardJumpHeight => maximumUpwardJumpHeight;
         public int MaximumSafeDownwardFallHeight => maximumSafeDownwardFallHeight;
         public float MovementSpeed => movementSpeed;
+        public float CurrentMovementSpeed => isUsingSlowMovement
+            ? movementSpeed * slowMovementSpeedMultiplier
+            : movementSpeed;
+        public bool IsUsingSlowMovement => isUsingSlowMovement;
         /// <summary>
         /// Presentation segments for the currently executed path. Empty while idle.
         /// </summary>
@@ -359,6 +369,7 @@ namespace PCOM
                     return false;
                 }
 
+                isUsingSlowMovement = false;
                 MovementCompleted?.Invoke(this, currentCoordinate);
                 return true;
             }
@@ -378,6 +389,8 @@ namespace PCOM
 
             isMoving = true;
             activePath = result;
+            isUsingSlowMovement =
+                result.Coordinates.Count - 1 < slowMovementTransitionThreshold;
             nextExecutedCellIndexInSegment = 1;
             deterministicExecutedSegmentIndex = 0;
             deterministicExecutedSegmentProgress = 0f;
@@ -447,6 +460,7 @@ namespace PCOM
             RestoreVisualRootBaseline();
             hasVisualRootBaseline = false;
             transform.position = GetStandingWorldPosition(currentCoordinate);
+            isUsingSlowMovement = false;
             MovementInterrupted?.Invoke(this, currentCoordinate);
         }
 
@@ -982,8 +996,8 @@ namespace PCOM
                 }
 
                 float effectiveSpeed = significantTurn && !turnEnded
-                    ? movementSpeed * significantTurnSpeedMultiplier
-                    : movementSpeed;
+                    ? CurrentMovementSpeed * significantTurnSpeedMultiplier
+                    : CurrentMovementSpeed;
                 progress = travelDistance <= positionArrivalTolerance
                     ? 1f
                     : Mathf.Min(1f, progress + (effectiveSpeed * Time.deltaTime / travelDistance));
@@ -1134,15 +1148,20 @@ namespace PCOM
             LadderClimbBegan?.Invoke(this, segment.PresentationSegment);
             Vector3 startPosition = segment.StartWorldPosition;
             Vector3 endPosition = segment.EndWorldPosition;
-            float duration = Vector3.Distance(startPosition, endPosition) / ladderClimbingSpeed;
+            Vector3 ladderClimbEndPosition = CalculateLadderClimbEndPosition(
+                startPosition,
+                endPosition);
+            float duration = Vector3.Distance(startPosition, ladderClimbEndPosition) /
+                             ladderClimbingSpeed;
             yield return MoveSpecialSegment(
                 segment,
                 startPosition,
-                endPosition,
+                ladderClimbEndPosition,
                 duration,
                 ladderMotionCurve,
                 false,
-                true);
+                true,
+                false);
             RestoreVisualRootBaseline();
             if (!isMoving)
             {
@@ -1150,7 +1169,40 @@ namespace PCOM
             }
 
             LadderClimbCompleted?.Invoke(this, segment.PresentationSegment);
+            ClamberBegan?.Invoke(this, segment.PresentationSegment);
+            yield return WaitForScaledSeconds(preClamberDelay);
+            if (!isMoving)
+            {
+                yield break;
+            }
+
+            yield return MoveSpecialSegment(
+                segment,
+                ladderClimbEndPosition,
+                endPosition,
+                clamberDuration,
+                clamberMotionCurve,
+                false,
+                false);
+            if (!isMoving)
+            {
+                yield break;
+            }
+
+            ClamberCompleted?.Invoke(this, segment.PresentationSegment);
+            yield return WaitForScaledSeconds(postClamberDelay);
             yield return WaitForScaledSeconds(postLadderDelay);
+        }
+
+        private Vector3 CalculateLadderClimbEndPosition(
+            Vector3 startPosition,
+            Vector3 endPosition)
+        {
+            float totalRise = Mathf.Max(0f, endPosition.y - startPosition.y);
+            float configuredClamberRise =
+                tileManager.CellSize * ladderTopClamberHeightInCells;
+            float clamberRise = Mathf.Min(configuredClamberRise, totalRise);
+            return endPosition - (Vector3.up * clamberRise);
         }
 
         private IEnumerator OrientForSpecialSegment(
@@ -1189,7 +1241,8 @@ namespace PCOM
             float duration,
             AnimationCurve motionCurve,
             bool applyJumpArc,
-            bool applyLadderBob)
+            bool applyLadderBob,
+            bool advanceExecutedProgress = true)
         {
             float elapsed = 0f;
             float previousMotionProgress = 0f;
@@ -1225,14 +1278,20 @@ namespace PCOM
                                                 (Vector3.up * CalculateLadderBob(normalizedTime));
                 }
 
-                AdvanceExecutedProgress(segment, normalizedTime);
+                if (advanceExecutedProgress)
+                {
+                    AdvanceExecutedProgress(segment, normalizedTime);
+                }
                 yield return null;
             }
 
             if (isMoving)
             {
                 transform.position = endPosition;
-                AdvanceExecutedProgress(segment, 1f);
+                if (advanceExecutedProgress)
+                {
+                    AdvanceExecutedProgress(segment, 1f);
+                }
             }
         }
 
@@ -1371,7 +1430,7 @@ namespace PCOM
                 return;
             }
 
-            float remainingMovementDistance = movementSpeed * deltaTime;
+            float remainingMovementDistance = CurrentMovementSpeed * deltaTime;
             while (remainingMovementDistance > 0f && isMoving)
             {
                 ExecutedMovementSegment segment = activeExecutedPath.Segments[
@@ -1448,6 +1507,7 @@ namespace PCOM
                 return;
             }
 
+            isUsingSlowMovement = false;
             MovementCompleted?.Invoke(this, currentCoordinate);
         }
 
@@ -1682,6 +1742,11 @@ namespace PCOM
         {
             movementAmount = ValidatePositive(movementAmount, DefaultMovementAmount);
             movementSpeed = ValidatePositive(movementSpeed, DefaultMovementSpeed);
+            slowMovementTransitionThreshold = Mathf.Max(1, slowMovementTransitionThreshold);
+            slowMovementSpeedMultiplier = Mathf.Clamp(
+                slowMovementSpeedMultiplier,
+                0.01f,
+                1f);
             rotationSpeed = ValidatePositive(rotationSpeed, DefaultRotationSpeed);
             hazardTraversalPenalty = ValidatePositive(
                 hazardTraversalPenalty,
@@ -1709,6 +1774,8 @@ namespace PCOM
             preLadderDelay = ValidateNonnegative(preLadderDelay);
             postLadderDelay = ValidateNonnegative(postLadderDelay);
             ladderClimbingSpeed = ValidatePositive(ladderClimbingSpeed, 2f);
+            ladderTopClamberHeightInCells = ValidateNonnegative(
+                ladderTopClamberHeightInCells);
             ladderBobAmplitude = ValidateNonnegative(ladderBobAmplitude);
             ladderBobCycleCount = ValidateNonnegative(ladderBobCycleCount);
             EnsurePresentationCurves();
