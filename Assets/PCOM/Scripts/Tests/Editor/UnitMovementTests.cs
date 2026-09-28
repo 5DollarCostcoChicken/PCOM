@@ -85,6 +85,52 @@ namespace PCOM.Tests
         }
 
         [Test]
+        public void MovementVisualizationPreviewUsesTheSameExecutedGeometryAsCommit()
+        {
+            AddStraightFloorPath(2);
+            movement.TryInitializeAtCoordinate(Vector3Int.zero, true);
+
+            MovementPreviewResult preview = movement.CalculateMovementPreview(Vector3Int.right * 2);
+
+            Assert.That(preview.IsReachable, Is.True);
+            Assert.That(movement.TryRequestMovement(Vector3Int.right * 2, out _), Is.True);
+            ExecutedMovementPath committedPath = movement.ActiveExecutedPath;
+            Assert.That(committedPath, Is.Not.Null);
+            Assert.That(preview.ExecutedPath.Coordinates, Is.EqualTo(committedPath.Coordinates));
+            Assert.That(preview.ExecutedPath.Segments, Has.Count.EqualTo(committedPath.Segments.Count));
+            for (int segmentIndex = 0; segmentIndex < committedPath.Segments.Count; segmentIndex++)
+            {
+                Assert.That(
+                    preview.ExecutedPath.Segments[segmentIndex].StartWorldPosition,
+                    Is.EqualTo(committedPath.Segments[segmentIndex].StartWorldPosition));
+                Assert.That(
+                    preview.ExecutedPath.Segments[segmentIndex].EndWorldPosition,
+                    Is.EqualTo(committedPath.Segments[segmentIndex].EndWorldPosition));
+            }
+
+            movement.CancelMovement();
+        }
+
+        [Test]
+        public void HazardousPreviewMarksOnlyItsAffectedRouteSections()
+        {
+            SetTile(Vector3Int.zero, TileManager.TileType.Floor);
+            SetTile(Vector3Int.right, TileManager.TileType.Floor);
+            SetTile(Vector3Int.right * 2, TileManager.TileType.Hazard);
+            SetMovementField("movementAmount", 4f);
+            movement.TryInitializeAtCoordinate(Vector3Int.zero, true);
+
+            MovementPreviewResult preview = movement.CalculateMovementPreview(Vector3Int.right * 2);
+
+            Assert.That(preview.IsReachable, Is.True);
+            Assert.That(preview.HasHazardSections, Is.True);
+            Assert.That(preview.RouteSections, Has.Some.Matches<MovementRouteSection>(
+                section => section.IsHazardous));
+            Assert.That(preview.RouteSections, Has.Some.Matches<MovementRouteSection>(
+                section => !section.IsHazardous));
+        }
+
+        [Test]
         public void PlayerAndExternalPreviewsUseTheSamePathfinder()
         {
             AddStraightFloorPath(2);

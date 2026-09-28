@@ -33,6 +33,10 @@ namespace PCOM
 
         public IReadOnlyList<Vector3Int> Coordinates { get; }
 
+        /// <summary>
+        /// Actual movement cost used for AP spending and movement-budget validation.
+        /// Hazard preference is not included.
+        /// </summary>
         public float WeightedCost { get; }
 
         public int RequiredActionPoints { get; }

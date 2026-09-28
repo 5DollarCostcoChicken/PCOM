@@ -204,11 +204,11 @@ namespace PCOM.Tests
                 hazardPenalty: 2f);
 
             Assert.That(result.IsSuccessful, Is.True);
-            Assert.That(result.WeightedCost, Is.EqualTo(4f));
+            Assert.That(result.WeightedCost, Is.EqualTo(2f));
         }
 
         [Test]
-        public void HazardCostContributesToBudgetAndActionPointRounding()
+        public void HazardPreferenceDoesNotIncreaseBudgetOrActionPointCost()
         {
             TileGridSnapshot map = CreateMap(
                 Tile(Vector3Int.zero),
@@ -226,8 +226,26 @@ namespace PCOM.Tests
                 2);
 
             Assert.That(result.IsSuccessful, Is.True);
-            Assert.That(result.WeightedCost, Is.EqualTo(4f));
-            Assert.That(result.RequiredActionPoints, Is.EqualTo(2));
+            Assert.That(result.WeightedCost, Is.EqualTo(2f));
+            Assert.That(result.RequiredActionPoints, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void HazardRouteRemainsAvailableWhenSafeAlternativeExceedsBudget()
+        {
+            GridPathResult result = pathfinder.FindPath(
+                CreateHazardChoiceMap(),
+                Vector3Int.zero,
+                Vector3Int.right * 2,
+                0,
+                0,
+                3f,
+                1f,
+                2);
+
+            Assert.That(result.IsSuccessful, Is.True);
+            Assert.That(result.WeightedCost, Is.EqualTo(2f));
+            CollectionAssert.Contains(result.Coordinates, Vector3Int.right);
         }
 
         [Test]
@@ -240,7 +258,7 @@ namespace PCOM.Tests
                 hazardPenalty: 0.5f);
 
             Assert.That(result.IsSuccessful, Is.True);
-            Assert.That(result.WeightedCost, Is.EqualTo(2.5f));
+            Assert.That(result.WeightedCost, Is.EqualTo(2f));
             CollectionAssert.Contains(result.Coordinates, Vector3Int.right);
         }
 

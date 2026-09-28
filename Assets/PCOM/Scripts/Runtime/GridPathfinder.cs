@@ -6,6 +6,8 @@ namespace PCOM
 {
     /// <summary>
     /// Deterministic A* over movement-selectable nodes in a sparse tile grid.
+    /// Hazard preference is planning-only; every legal horizontal step costs one unit
+    /// of actual movement budget regardless of its tile type.
     /// </summary>
     public sealed class GridPathfinder
     {
@@ -23,6 +25,83 @@ namespace PCOM
         private readonly List<Vector3Int> columnCoordinates = new List<Vector3Int>();
         private readonly List<NeighborCandidate> neighbors = new List<NeighborCandidate>();
         private readonly List<NeighborCandidate> ladderAscentCandidates = new List<NeighborCandidate>();
+
+        /// <summary>
+        /// Calculates the cheapest legal physical movement cost to every tile within a
+        /// bounded movement budget. Hazard preference is deliberately excluded because
+        /// it only influences route selection, not AP spending or reachability.
+        /// </summary>
+        public MovementReachabilityResult CalculateReachability(
+            IGridPathMap map,
+            Vector3Int startCoordinate,
+            int maximumJumpHeight,
+            int maximumFallHeight,
+            float hazardPenalty,
+            float movementAmount,
+            int maximumActionPointBands,
+            IGridTraversalPolicy traversalPolicy = null)
+        {
+            if (map == null)
+            {
+                throw new ArgumentNullException(nameof(map));
+            }
+
+            ValidateSettings(maximumJumpHeight, maximumFallHeight, hazardPenalty, movementAmount);
+            int clampedBands = Mathf.Clamp(maximumActionPointBands, 0, 3);
+            float maximumCost = MovementBudget.CalculateMaximumCost(movementAmount, clampedBands);
+            Dictionary<Vector3Int, float> costs = new Dictionary<Vector3Int, float>();
+            if (clampedBands == 0 ||
+                !map.TryGetTile(startCoordinate, out TileManager.TileType startType) ||
+                !TileManager.IsMovementSelectableTileType(startType) ||
+                (traversalPolicy != null && !traversalPolicy.CanEnter(startCoordinate)))
+            {
+                return new MovementReachabilityResult(costs, movementAmount, clampedBands);
+            }
+
+            BinaryMinHeap openCoordinates = new BinaryMinHeap();
+            costs.Add(startCoordinate, 0f);
+            openCoordinates.Push(new OpenEntry(startCoordinate, 0f, 0f, 0m, 0));
+            long insertionOrder = 1;
+            while (openCoordinates.Count > 0)
+            {
+                OpenEntry currentEntry = openCoordinates.Pop();
+                if (!costs.TryGetValue(currentEntry.Coordinate, out float currentCost) ||
+                    currentEntry.CostFromStart > currentCost + CostComparisonTolerance)
+                {
+                    continue;
+                }
+
+                CollectNeighbors(
+                    map,
+                    currentEntry.Coordinate,
+                    maximumJumpHeight,
+                    maximumFallHeight,
+                    traversalPolicy,
+                    neighbors);
+                for (int neighborIndex = 0; neighborIndex < neighbors.Count; neighborIndex++)
+                {
+                    NeighborCandidate neighbor = neighbors[neighborIndex];
+                    float neighborCost = currentCost + NormalStepCost;
+                    if (neighborCost > maximumCost + CostComparisonTolerance ||
+                        (costs.TryGetValue(neighbor.Coordinate, out float knownCost) &&
+                         neighborCost >= knownCost - CostComparisonTolerance))
+                    {
+                        continue;
+                    }
+
+                    costs[neighbor.Coordinate] = neighborCost;
+                    openCoordinates.Push(new OpenEntry(
+                        neighbor.Coordinate,
+                        neighborCost,
+                        0f,
+                        0m,
+                        insertionOrder));
+                    insertionOrder++;
+                }
+            }
+
+            return new MovementReachabilityResult(costs, movementAmount, clampedBands);
+        }
 
         public GridPathResult FindPath(
             IGridPathMap map,
@@ -67,15 +146,18 @@ namespace PCOM
                 return GridPathResult.Success(new[] { startCoordinate }, 0f, 0);
             }
 
-            Dictionary<Vector3Int, NodeRecord> records = new Dictionary<Vector3Int, NodeRecord>();
-            HashSet<Vector3Int> closedCoordinates = new HashSet<Vector3Int>();
+            List<PathNode> nodes = new List<PathNode>();
+            List<bool> activeNodes = new List<bool>();
+            Dictionary<Vector3Int, List<int>> labelsByCoordinate =
+                new Dictionary<Vector3Int, List<int>>();
             BinaryMinHeap openCoordinates = new BinaryMinHeap();
             float startHeuristic = CalculateHeuristic(startCoordinate, targetCoordinate);
-            records.Add(startCoordinate, new NodeRecord(
-                0f,
-                default,
-                false,
-                startCoordinate));
+            TryAddPathNode(
+                nodes,
+                activeNodes,
+                labelsByCoordinate,
+                new PathNode(startCoordinate, 0f, 0f, -1, startCoordinate),
+                out int startNodeIndex);
             openCoordinates.Push(new OpenEntry(
                 startCoordinate,
                 0f,
@@ -84,31 +166,53 @@ namespace PCOM
                     startCoordinate,
                     startCoordinate,
                     targetCoordinate),
-                0));
+                0,
+                startNodeIndex));
             long insertionOrder = 1;
+            float maximumMovementCost = MovementBudget.CalculateMaximumCost(
+                movementAmount,
+                currentActionPoints);
+            int rejectedTargetNodeIndex = -1;
 
             while (openCoordinates.Count > 0)
             {
                 OpenEntry currentEntry = openCoordinates.Pop();
-                if (closedCoordinates.Contains(currentEntry.Coordinate) ||
-                    !records.TryGetValue(currentEntry.Coordinate, out NodeRecord currentRecord) ||
-                    currentEntry.CostFromStart > currentRecord.CostFromStart + CostComparisonTolerance)
+                if (currentEntry.PathNodeIndex < 0 ||
+                    currentEntry.PathNodeIndex >= nodes.Count ||
+                    !activeNodes[currentEntry.PathNodeIndex])
+                {
+                    continue;
+                }
+
+                PathNode currentNode = nodes[currentEntry.PathNodeIndex];
+                if (currentEntry.CostFromStart > currentNode.PlanningCost + CostComparisonTolerance)
                 {
                     continue;
                 }
 
                 if (currentEntry.Coordinate == targetCoordinate)
                 {
-                    return BuildSuccessfulResult(
-                        records,
-                        startCoordinate,
-                        targetCoordinate,
-                        currentRecord.CostFromStart,
-                        movementAmount,
-                        currentActionPoints);
+                    if (currentNode.PhysicalCost <= maximumMovementCost + CostComparisonTolerance)
+                    {
+                        return BuildPathResult(
+                            nodes,
+                            currentEntry.PathNodeIndex,
+                            currentNode.PhysicalCost,
+                            movementAmount,
+                            currentActionPoints);
+                    }
+
+                    if (rejectedTargetNodeIndex < 0 ||
+                        IsPreferredRejectedTarget(
+                            currentNode,
+                            nodes[rejectedTargetNodeIndex]))
+                    {
+                        rejectedTargetNodeIndex = currentEntry.PathNodeIndex;
+                    }
+
+                    continue;
                 }
 
-                closedCoordinates.Add(currentEntry.Coordinate);
                 CollectNeighbors(
                     map,
                     currentEntry.Coordinate,
@@ -124,43 +228,55 @@ namespace PCOM
                 for (int neighborIndex = 0; neighborIndex < neighbors.Count; neighborIndex++)
                 {
                     NeighborCandidate neighbor = neighbors[neighborIndex];
-                    if (closedCoordinates.Contains(neighbor.Coordinate))
-                    {
-                        continue;
-                    }
-
-                    float traversalCost = NormalStepCost +
-                        (neighbor.TileType == TileManager.TileType.Hazard ? hazardPenalty : 0f);
-                    float tentativeCost = currentRecord.CostFromStart + traversalCost;
-                    if (records.TryGetValue(neighbor.Coordinate, out NodeRecord existingRecord) &&
-                        tentativeCost >= existingRecord.CostFromStart - CostComparisonTolerance)
-                    {
-                        continue;
-                    }
-
                     Vector3Int lineStartCoordinate = beginsOnLadder &&
                                                      neighbor.Coordinate.y >
                                                      currentEntry.Coordinate.y
                         ? neighbor.Coordinate
-                        : currentRecord.LineStartCoordinate;
-                    records[neighbor.Coordinate] = new NodeRecord(
-                        tentativeCost,
-                        currentEntry.Coordinate,
-                        true,
+                        : currentNode.LineStartCoordinate;
+                    float physicalCost = currentNode.PhysicalCost + NormalStepCost;
+                    float planningCost = currentNode.PlanningCost + NormalStepCost +
+                        (neighbor.TileType == TileManager.TileType.Hazard ? hazardPenalty : 0f);
+                    PathNode candidateNode = new PathNode(
+                        neighbor.Coordinate,
+                        physicalCost,
+                        planningCost,
+                        currentEntry.PathNodeIndex,
                         lineStartCoordinate);
+                    if (!TryAddPathNode(
+                            nodes,
+                            activeNodes,
+                            labelsByCoordinate,
+                            candidateNode,
+                            out int candidateNodeIndex))
+                    {
+                        continue;
+                    }
+
                     float heuristic = CalculateHeuristic(neighbor.Coordinate, targetCoordinate);
                     openCoordinates.Push(
                         new OpenEntry(
                             neighbor.Coordinate,
-                            tentativeCost,
+                            planningCost,
                             heuristic,
                             CalculateHorizontalLineDeviation(
                                 neighbor.Coordinate,
                                 lineStartCoordinate,
                                 targetCoordinate),
-                            insertionOrder));
+                            insertionOrder,
+                            candidateNodeIndex));
                     insertionOrder++;
                 }
+            }
+
+            if (rejectedTargetNodeIndex >= 0)
+            {
+                PathNode rejectedTarget = nodes[rejectedTargetNodeIndex];
+                return BuildPathResult(
+                    nodes,
+                    rejectedTargetNodeIndex,
+                    rejectedTarget.PhysicalCost,
+                    movementAmount,
+                    currentActionPoints);
             }
 
             return GridPathResult.Failure(GridPathFailureReason.NoLegalPath);
@@ -272,43 +388,98 @@ namespace PCOM
                    supportType == TileManager.TileType.Wall;
         }
 
-        private static GridPathResult BuildSuccessfulResult(
-            Dictionary<Vector3Int, NodeRecord> records,
-            Vector3Int startCoordinate,
-            Vector3Int targetCoordinate,
-            float weightedCost,
+        private static GridPathResult BuildPathResult(
+            IReadOnlyList<PathNode> nodes,
+            int targetNodeIndex,
+            float physicalCost,
             float movementAmount,
             int currentActionPoints)
         {
             int requiredActionPoints = MovementBudget.CalculateRequiredActionPoints(
-                weightedCost,
+                physicalCost,
                 movementAmount);
-            List<Vector3Int> reversedPath = new List<Vector3Int> { targetCoordinate };
-            Vector3Int coordinate = targetCoordinate;
-            while (coordinate != startCoordinate)
+            List<Vector3Int> reversedPath = new List<Vector3Int>();
+            int nodeIndex = targetNodeIndex;
+            while (nodeIndex >= 0)
             {
-                NodeRecord record = records[coordinate];
-                if (!record.HasParent)
-                {
-                    return GridPathResult.Failure(GridPathFailureReason.NoLegalPath);
-                }
-
-                coordinate = record.ParentCoordinate;
-                reversedPath.Add(coordinate);
+                PathNode node = nodes[nodeIndex];
+                reversedPath.Add(node.Coordinate);
+                nodeIndex = node.ParentNodeIndex;
             }
 
             reversedPath.Reverse();
-            if (weightedCost > MovementBudget.CalculateMaximumCost(movementAmount, currentActionPoints) +
+            if (physicalCost > MovementBudget.CalculateMaximumCost(movementAmount, currentActionPoints) +
                 CostComparisonTolerance)
             {
                 return GridPathResult.RejectedPath(
                     reversedPath,
-                    weightedCost,
+                    physicalCost,
                     requiredActionPoints,
                     GridPathFailureReason.ExceedsMovementBudget);
             }
 
-            return GridPathResult.Success(reversedPath, weightedCost, requiredActionPoints);
+            return GridPathResult.Success(reversedPath, physicalCost, requiredActionPoints);
+        }
+
+        private static bool TryAddPathNode(
+            List<PathNode> nodes,
+            List<bool> activeNodes,
+            Dictionary<Vector3Int, List<int>> labelsByCoordinate,
+            PathNode candidate,
+            out int candidateNodeIndex)
+        {
+            candidateNodeIndex = -1;
+            if (!labelsByCoordinate.TryGetValue(candidate.Coordinate, out List<int> labels))
+            {
+                labels = new List<int>();
+                labelsByCoordinate.Add(candidate.Coordinate, labels);
+            }
+
+            for (int labelIndex = 0; labelIndex < labels.Count; labelIndex++)
+            {
+                int existingNodeIndex = labels[labelIndex];
+                if (!activeNodes[existingNodeIndex])
+                {
+                    continue;
+                }
+
+                if (Dominates(nodes[existingNodeIndex], candidate))
+                {
+                    return false;
+                }
+            }
+
+            for (int labelIndex = labels.Count - 1; labelIndex >= 0; labelIndex--)
+            {
+                int existingNodeIndex = labels[labelIndex];
+                if (!activeNodes[existingNodeIndex] || Dominates(candidate, nodes[existingNodeIndex]))
+                {
+                    activeNodes[existingNodeIndex] = false;
+                    labels.RemoveAt(labelIndex);
+                }
+            }
+
+            candidateNodeIndex = nodes.Count;
+            nodes.Add(candidate);
+            activeNodes.Add(true);
+            labels.Add(candidateNodeIndex);
+            return true;
+        }
+
+        private static bool Dominates(PathNode left, PathNode right)
+        {
+            return left.PhysicalCost <= right.PhysicalCost + CostComparisonTolerance &&
+                   left.PlanningCost <= right.PlanningCost + CostComparisonTolerance;
+        }
+
+        private static bool IsPreferredRejectedTarget(PathNode candidate, PathNode current)
+        {
+            if (!Mathf.Approximately(candidate.PlanningCost, current.PlanningCost))
+            {
+                return candidate.PlanningCost < current.PlanningCost;
+            }
+
+            return candidate.PhysicalCost < current.PhysicalCost;
         }
 
         private static float CalculateHeuristic(Vector3Int coordinate, Vector3Int targetCoordinate)
@@ -391,23 +562,30 @@ namespace PCOM
             public bool HasWallSupport { get; }
         }
 
-        private readonly struct NodeRecord
+        /// <summary>
+        /// A nondominated planning label. Multiple labels may occupy one coordinate when
+        /// a safer route costs more physical movement than a hazardous alternative.
+        /// </summary>
+        private readonly struct PathNode
         {
-            public NodeRecord(
-                float costFromStart,
-                Vector3Int parentCoordinate,
-                bool hasParent,
+            public PathNode(
+                Vector3Int coordinate,
+                float physicalCost,
+                float planningCost,
+                int parentNodeIndex,
                 Vector3Int lineStartCoordinate)
             {
-                CostFromStart = costFromStart;
-                ParentCoordinate = parentCoordinate;
-                HasParent = hasParent;
+                Coordinate = coordinate;
+                PhysicalCost = physicalCost;
+                PlanningCost = planningCost;
+                ParentNodeIndex = parentNodeIndex;
                 LineStartCoordinate = lineStartCoordinate;
             }
 
-            public float CostFromStart { get; }
-            public Vector3Int ParentCoordinate { get; }
-            public bool HasParent { get; }
+            public Vector3Int Coordinate { get; }
+            public float PhysicalCost { get; }
+            public float PlanningCost { get; }
+            public int ParentNodeIndex { get; }
             public Vector3Int LineStartCoordinate { get; }
         }
 
@@ -419,6 +597,23 @@ namespace PCOM
                 float heuristic,
                 decimal lineDeviation,
                 long insertionOrder)
+                : this(
+                    coordinate,
+                    costFromStart,
+                    heuristic,
+                    lineDeviation,
+                    insertionOrder,
+                    -1)
+            {
+            }
+
+            public OpenEntry(
+                Vector3Int coordinate,
+                float costFromStart,
+                float heuristic,
+                decimal lineDeviation,
+                long insertionOrder,
+                int pathNodeIndex)
             {
                 Coordinate = coordinate;
                 CostFromStart = costFromStart;
@@ -426,6 +621,7 @@ namespace PCOM
                 EstimatedTotalCost = costFromStart + heuristic;
                 LineDeviation = lineDeviation;
                 InsertionOrder = insertionOrder;
+                PathNodeIndex = pathNodeIndex;
             }
 
             public Vector3Int Coordinate { get; }
@@ -434,6 +630,7 @@ namespace PCOM
             public float EstimatedTotalCost { get; }
             public decimal LineDeviation { get; }
             public long InsertionOrder { get; }
+            public int PathNodeIndex { get; }
         }
 
         private sealed class BinaryMinHeap

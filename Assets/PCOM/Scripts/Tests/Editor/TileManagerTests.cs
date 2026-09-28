@@ -278,6 +278,24 @@ namespace PCOM.Tests
         }
 
         [Test]
+        public void SlopedSurfaceHitPromotesAStackedLowerSlopeToTheUpperTile()
+        {
+            SetTile(Vector3Int.zero, TileManager.TileType.Slope);
+            SetTile(Vector3Int.up, TileManager.TileType.Slope);
+
+            bool resolved = manager.TryResolveMovementSelectableTile(
+                Vector3.up * 0.35f,
+                new Vector3(0f, 1f, 1f).normalized,
+                0.01f,
+                out Vector3Int coordinate,
+                out TileManager.TileType tileType);
+
+            Assert.That(resolved, Is.True);
+            Assert.That(coordinate, Is.EqualTo(Vector3Int.up));
+            Assert.That(tileType, Is.EqualTo(TileManager.TileType.Slope));
+        }
+
+        [Test]
         public void BounderWithoutColliderLogsWarningAndIsSkipped()
         {
             GameObject bounder = CreateGameObject("Missing Collider Bounder");
@@ -484,6 +502,51 @@ namespace PCOM.Tests
             floorOverride.transform.position = new Vector3(0f, 2f, 0f);
             MapFloorOverrideBounder(floorOverride.gameObject, TileManager.TileType.Ladder);
             Assert.That(manager.Tiles[Vector3Int.zero], Is.EqualTo(TileManager.TileType.Ladder));
+        }
+
+        [Test]
+        public void BounderMappingDisablesMeshRenderersWithoutDisablingColliders()
+        {
+            GameObject volumeBounder = CreateGameObject("Volume Bounder");
+            MeshRenderer volumeRenderer = volumeBounder.AddComponent<MeshRenderer>();
+            BoxCollider volumeCollider = volumeBounder.AddComponent<BoxCollider>();
+            GameObject visualChild = CreateGameObject("Bounder Visual Child");
+            visualChild.transform.SetParent(volumeBounder.transform, false);
+            MeshRenderer childRenderer = visualChild.AddComponent<MeshRenderer>();
+            Physics.SyncTransforms();
+
+            InvokePrivate("MapBounder", volumeBounder, TileManager.TileType.Floor);
+
+            Assert.That(volumeRenderer.enabled, Is.False);
+            Assert.That(childRenderer.enabled, Is.False);
+            Assert.That(volumeCollider.enabled, Is.True);
+
+            SetTile(new Vector3Int(5, 0, 0), TileManager.TileType.Floor);
+            GameObject overrideBounder = CreateGameObject("Override Bounder");
+            overrideBounder.transform.position = new Vector3(5f, 1f, 0f);
+            MeshRenderer overrideRenderer = overrideBounder.AddComponent<MeshRenderer>();
+            BoxCollider overrideCollider = overrideBounder.AddComponent<BoxCollider>();
+            overrideCollider.size = Vector3.one * 0.4f;
+
+            MapFloorOverrideBounder(overrideBounder, TileManager.TileType.Hazard);
+
+            Assert.That(overrideRenderer.enabled, Is.False);
+            Assert.That(overrideCollider.enabled, Is.True);
+        }
+
+        [Test]
+        public void BounderRenderersRemainEnabledWhenHidingIsDisabled()
+        {
+            SetPrivateField("hideBounderMeshRenderers", false);
+            GameObject bounder = CreateGameObject("Visible Bounder");
+            MeshRenderer renderer = bounder.AddComponent<MeshRenderer>();
+            BoxCollider collider = bounder.AddComponent<BoxCollider>();
+            Physics.SyncTransforms();
+
+            InvokePrivate("MapBounder", bounder, TileManager.TileType.Floor);
+
+            Assert.That(renderer.enabled, Is.True);
+            Assert.That(collider.enabled, Is.True);
         }
 
         [Test]

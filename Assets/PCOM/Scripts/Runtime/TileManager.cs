@@ -46,6 +46,9 @@ namespace PCOM
         [SerializeField] private Vector3 gridOrigin = Vector3.zero;
         [SerializeField, Min(MinimumCellSize)] private float cellSize = DefaultCellSize;
 
+        [Header("Map Bounders")]
+        [SerializeField] private bool hideBounderMeshRenderers = true;
+
         [Header("Grid Visualization")]
         [SerializeField] private bool visualizeGrid = true;
         [Tooltip("Show only floor-family tiles, their complete adjacent neighborhood, preserved headroom, and all wall tiles.")]
@@ -181,6 +184,7 @@ namespace PCOM
 
         private void MapBounder(GameObject bounder, TileType tileType)
         {
+            HideBounderMeshRenderers(bounder);
             Collider[] colliders = bounder.GetComponentsInChildren<Collider>();
             int enabledColliderCount = 0;
             for (int colliderIndex = 0; colliderIndex < colliders.Length; colliderIndex++)
@@ -217,6 +221,7 @@ namespace PCOM
             TileType floorSubtype,
             Dictionary<Vector2Int, List<Vector3Int>> columns)
         {
+            HideBounderMeshRenderers(bounder);
             Collider[] colliders = bounder.GetComponentsInChildren<Collider>();
             Dictionary<Vector2Int, int> footprintMinimumY = new Dictionary<Vector2Int, int>();
             int enabledColliderCount = 0;
@@ -252,6 +257,22 @@ namespace PCOM
                 {
                     AssignTile(floorCoordinate, floorSubtype);
                 }
+            }
+        }
+
+        private void HideBounderMeshRenderers(GameObject bounder)
+        {
+            if (!hideBounderMeshRenderers)
+            {
+                return;
+            }
+
+            MeshRenderer[] meshRenderers = bounder.GetComponentsInChildren<MeshRenderer>(true);
+            for (int rendererIndex = 0;
+                 rendererIndex < meshRenderers.Length;
+                 rendererIndex++)
+            {
+                meshRenderers[rendererIndex].enabled = false;
             }
         }
 
@@ -790,7 +811,16 @@ namespace PCOM
             }
 
             float worldTolerance = cellSize * surfaceBoundaryToleranceFraction;
-            Vector3 inwardSample = surfaceHitPoint - (surfaceNormal.normalized * worldTolerance);
+            // The tolerance only resolves horizontal grid-edge ambiguity. Pushing a
+            // sloped hit along its complete normal also changes its elevation, which
+            // can incorrectly resolve an overlapping lower slope voxel. Preserve the
+            // collider's hit height and move only horizontally into the touched cell.
+            Vector3 horizontalNormal = new Vector3(surfaceNormal.x, 0f, surfaceNormal.z);
+            Vector3 inwardSample = surfaceHitPoint;
+            if (horizontalNormal.sqrMagnitude > Mathf.Epsilon)
+            {
+                inwardSample -= horizontalNormal.normalized * worldTolerance;
+            }
             Vector3Int initialCoordinate = WorldToGridCoordinate(inwardSample);
             float maximumBoundsDistanceSquared = worldTolerance * worldTolerance;
             float bestBoundsDistanceSquared = float.PositiveInfinity;
@@ -841,7 +871,27 @@ namespace PCOM
                 }
             }
 
+            if (foundCandidate && tileType == TileType.Slope)
+            {
+                PromoteStackedSlopeSelection(ref coordinate, ref tileType);
+            }
+
             return foundCandidate;
+        }
+
+        private void PromoteStackedSlopeSelection(
+            ref Vector3Int coordinate,
+            ref TileType tileType)
+        {
+            // A lower voxel in a stacked slope column has no usable headroom. The
+            // visible and traversable surface is represented by the slope tile above
+            // it, so selection deliberately promotes through the full stack.
+            while (tiles.TryGetValue(coordinate + Vector3Int.up, out TileType upperType) &&
+                   upperType == TileType.Slope)
+            {
+                coordinate += Vector3Int.up;
+                tileType = upperType;
+            }
         }
 
         private static bool IsFinite(Vector3 value)
@@ -871,7 +921,10 @@ namespace PCOM
 
             if (candidateCoordinate.y != bestCoordinate.y)
             {
-                return candidateCoordinate.y < bestCoordinate.y;
+                // When a thin slope straddles a voxel boundary, both cells have the
+                // same hit distance. The upper representative has the available
+                // headroom and is the stable selection for the visible surface.
+                return candidateCoordinate.y > bestCoordinate.y;
             }
 
             if (candidateCoordinate.x != bestCoordinate.x)

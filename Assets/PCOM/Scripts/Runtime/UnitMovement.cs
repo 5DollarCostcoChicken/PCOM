@@ -33,6 +33,7 @@ namespace PCOM
         private float movementAmount = DefaultMovementAmount;
         [SerializeField, Min(0)] private int maximumUpwardJumpHeight = 1;
         [SerializeField, Min(0)] private int maximumSafeDownwardFallHeight = 2;
+        [Tooltip("Additional planning-only cost used to prefer routes that avoid Hazard tiles. It never increases physical movement cost or AP spent.")]
         [SerializeField, Min(MinimumPositiveValue)]
         private float hazardTraversalPenalty = DefaultHazardPenalty;
 
@@ -180,6 +181,37 @@ namespace PCOM
         public bool IsInitialized => isInitialized;
         public Vector3 StandingOffset => standingOffset;
         public int CurrentActionPoints => EffectiveActionPointProvider.CurrentActionPoints;
+
+        /// <summary>Returns the movement surface position before the unit standing offset is applied.</summary>
+        public Vector3 GetVisualSurfaceWorldPosition(Vector3Int coordinate)
+        {
+            Vector3 worldCenter = tileManager != null
+                ? tileManager.GridToWorldCenter(coordinate)
+                : default;
+            return EvaluateVisualSurfaceWorldPosition(coordinate, worldCenter);
+        }
+
+        /// <summary>Evaluates a horizontal point against the surface associated with a tile.</summary>
+        public Vector3 EvaluateVisualSurfaceWorldPosition(
+            Vector3Int coordinate,
+            Vector3 horizontalWorldPosition)
+        {
+            if (tileManager != null &&
+                tileManager.TryGetTile(coordinate, out TileManager.TileType tileType) &&
+                tileType == TileManager.TileType.Slope &&
+                TryGetSlopeRegionForSegment(coordinate, coordinate, out SlopeRegion slopeRegion))
+            {
+                horizontalWorldPosition.y = slopeRegion.EvaluateWorldHeight(horizontalWorldPosition);
+                return horizontalWorldPosition;
+            }
+
+            return tileManager != null
+                ? new Vector3(
+                    horizontalWorldPosition.x,
+                    tileManager.GridToWorldCenter(coordinate).y,
+                    horizontalWorldPosition.z)
+                : horizontalWorldPosition;
+        }
 
         private IActionPointProvider EffectiveActionPointProvider =>
             externalActionPointProvider ?? (IActionPointProvider)this;
@@ -344,6 +376,103 @@ namespace PCOM
         }
 
         /// <summary>
+        /// Computes a bounded Dijkstra movement radius using this unit's authoritative
+        /// movement rules. It is intended for display only and never changes unit state.
+        /// </summary>
+        public MovementReachabilityResult CalculateReachabilityPreview(int maximumActionPointBands)
+        {
+            int bands = Mathf.Min(Mathf.Clamp(maximumActionPointBands, 0, 3), CurrentActionPoints);
+            if (tileManager == null || !isInitialized)
+            {
+                return new MovementReachabilityResult(
+                    new Dictionary<Vector3Int, float>(),
+                    movementAmount,
+                    bands);
+            }
+
+            TileGridSnapshot snapshot = new TileGridSnapshot(tileManager.Tiles);
+            IGridTraversalPolicy traversalPolicy = externalTraversalPolicy ??
+                                                   new OneCellGridTraversalPolicy(snapshot);
+            return pathfinder.CalculateReachability(
+                snapshot,
+                currentCoordinate,
+                maximumUpwardJumpHeight,
+                maximumSafeDownwardFallHeight,
+                hazardTraversalPenalty,
+                movementAmount,
+                bands,
+                traversalPolicy);
+        }
+
+        /// <summary>
+        /// Builds a non-mutating preview from the same finalized executed-path builder
+        /// used immediately before committed movement starts.
+        /// </summary>
+        public MovementPreviewResult CalculateMovementPreview(Vector3Int targetCoordinate)
+        {
+            GridPathResult pathResult = CalculatePathPreview(targetCoordinate);
+            if (!pathResult.IsSuccessful || pathResult.Coordinates.Count <= 1 ||
+                !TryBuildExecutedPath(pathResult.Coordinates, out ExecutedMovementPath executedPath))
+            {
+                return new MovementPreviewResult(pathResult, null, Array.Empty<MovementRouteSection>());
+            }
+
+            return new MovementPreviewResult(
+                pathResult,
+                executedPath,
+                BuildRouteSections(executedPath));
+        }
+
+        /// <summary>
+        /// Samples the exact geometric trajectory used by an executed segment. Delay and
+        /// orientation phases are intentionally omitted because they do not move the unit.
+        /// </summary>
+        public Vector3 SampleExecutedSegmentPosition(ExecutedMovementSegment segment, float progress)
+        {
+            if (segment == null)
+            {
+                throw new ArgumentNullException(nameof(segment));
+            }
+
+            progress = Mathf.Clamp01(progress);
+            switch (segment.Type)
+            {
+                case MovementPresentationSegmentType.FlatRun:
+                case MovementPresentationSegmentType.SlopeRun:
+                    return EvaluateRunPosition(
+                        segment.PresentationSegment,
+                        segment.StartWorldPosition,
+                        segment.EndWorldPosition,
+                        progress);
+                case MovementPresentationSegmentType.Jump:
+                {
+                    Vector3 position = Vector3.LerpUnclamped(
+                        segment.StartWorldPosition,
+                        segment.EndWorldPosition,
+                        progress);
+                    position.y += jumpArcHeight * jumpArcProfile.Evaluate(progress);
+                    return position;
+                }
+                case MovementPresentationSegmentType.Clamber:
+                    return EvaluateCurvedPosition(
+                        segment.StartWorldPosition,
+                        segment.EndWorldPosition,
+                        clamberMotionCurve,
+                        progress);
+                case MovementPresentationSegmentType.Drop:
+                    return EvaluateCurvedPosition(
+                        segment.StartWorldPosition,
+                        segment.EndWorldPosition,
+                        dropMotionCurve,
+                        progress);
+                case MovementPresentationSegmentType.LadderAscent:
+                    return EvaluateLadderPosition(segment, progress);
+                default:
+                    return Vector3.Lerp(segment.StartWorldPosition, segment.EndWorldPosition, progress);
+            }
+        }
+
+        /// <summary>
         /// Revalidates a target, spends AP, and starts following the accepted path.
         /// Player and AI targets enter through this same method.
         /// </summary>
@@ -498,6 +627,20 @@ namespace PCOM
         private bool TryPrepareExecutedPath(IReadOnlyList<Vector3Int> logicalCoordinates)
         {
             activeExecutedPath = null;
+            if (!TryBuildExecutedPath(logicalCoordinates, out ExecutedMovementPath executedPath))
+            {
+                return false;
+            }
+
+            activeExecutedPath = executedPath;
+            return true;
+        }
+
+        private bool TryBuildExecutedPath(
+            IReadOnlyList<Vector3Int> logicalCoordinates,
+            out ExecutedMovementPath executedPath)
+        {
+            executedPath = null;
             preparedPresentationSegments.Clear();
             preparedExecutedSegments.Clear();
             TileGridSnapshot snapshot = new TileGridSnapshot(tileManager.Tiles);
@@ -548,8 +691,38 @@ namespace PCOM
                 return false;
             }
 
-            activeExecutedPath = new ExecutedMovementPath(preparedExecutedSegments);
+            executedPath = new ExecutedMovementPath(preparedExecutedSegments);
             return true;
+        }
+
+        private IReadOnlyList<MovementRouteSection> BuildRouteSections(ExecutedMovementPath executedPath)
+        {
+            List<MovementRouteSection> sections = new List<MovementRouteSection>();
+            for (int segmentIndex = 0; segmentIndex < executedPath.Segments.Count; segmentIndex++)
+            {
+                IReadOnlyList<Vector3Int> coordinates =
+                    executedPath.Segments[segmentIndex].CrossedCoordinates;
+                int transitionCount = coordinates.Count - 1;
+                for (int transitionIndex = 0; transitionIndex < transitionCount; transitionIndex++)
+                {
+                    bool isHazardous = IsHazardCoordinate(coordinates[transitionIndex]) ||
+                                       IsHazardCoordinate(coordinates[transitionIndex + 1]);
+                    sections.Add(new MovementRouteSection(
+                        segmentIndex,
+                        (float)transitionIndex / transitionCount,
+                        (float)(transitionIndex + 1) / transitionCount,
+                        isHazardous));
+                }
+            }
+
+            return sections.AsReadOnly();
+        }
+
+        private bool IsHazardCoordinate(Vector3Int coordinate)
+        {
+            return tileManager != null &&
+                   tileManager.TryGetTile(coordinate, out TileManager.TileType tileType) &&
+                   tileType == TileManager.TileType.Hazard;
         }
 
         private void AddPhysicallyValidatedSegments(
@@ -1203,6 +1376,48 @@ namespace PCOM
                 tileManager.CellSize * ladderTopClamberHeightInCells;
             float clamberRise = Mathf.Min(configuredClamberRise, totalRise);
             return endPosition - (Vector3.up * clamberRise);
+        }
+
+        private Vector3 EvaluateLadderPosition(ExecutedMovementSegment segment, float progress)
+        {
+            Vector3 climbEnd = CalculateLadderClimbEndPosition(
+                segment.StartWorldPosition,
+                segment.EndWorldPosition);
+            float climbDuration = Vector3.Distance(segment.StartWorldPosition, climbEnd) /
+                                  Mathf.Max(MinimumPositiveValue, ladderClimbingSpeed);
+            float totalDuration = climbDuration + Mathf.Max(MinimumPositiveValue, clamberDuration);
+            float climbPortion = totalDuration <= MinimumPositiveValue
+                ? 1f
+                : climbDuration / totalDuration;
+            if (progress <= climbPortion && climbPortion > 0f)
+            {
+                return EvaluateCurvedPosition(
+                    segment.StartWorldPosition,
+                    climbEnd,
+                    ladderMotionCurve,
+                    progress / climbPortion);
+            }
+
+            float clamberProgress = climbPortion >= 1f
+                ? 1f
+                : (progress - climbPortion) / (1f - climbPortion);
+            return EvaluateCurvedPosition(
+                climbEnd,
+                segment.EndWorldPosition,
+                clamberMotionCurve,
+                clamberProgress);
+        }
+
+        private static Vector3 EvaluateCurvedPosition(
+            Vector3 startPosition,
+            Vector3 endPosition,
+            AnimationCurve motionCurve,
+            float progress)
+        {
+            float curvedProgress = motionCurve == null
+                ? Mathf.Clamp01(progress)
+                : Mathf.Clamp01(motionCurve.Evaluate(Mathf.Clamp01(progress)));
+            return Vector3.LerpUnclamped(startPosition, endPosition, curvedProgress);
         }
 
         private IEnumerator OrientForSpecialSegment(
